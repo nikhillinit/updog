@@ -7,6 +7,7 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     strictPort: false,
+    allowedHosts: ['.replit.dev', '.repl.co', 'localhost'], // Add this line
     hmr: {
       clientPort: 443,
     },
