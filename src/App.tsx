@@ -1,14 +1,16 @@
-import React, { useState, Suspense } from 'react';
+import React, { Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { FundProvider } from './context/FundContext';
 import AppLayout from './components/AppLayout';
 import LoadingSpinner from './components/LoadingSpinner';
 import ErrorBoundary from './components/ErrorBoundary';
 
-// Lazy load page components for better performance
+// Lazy load page components
 const FundOverview = React.lazy(() => import('./pages/FundOverview'));
 const PerformanceAnalytics = React.lazy(() => import('./pages/PerformanceAnalytics'));
-const PortfolioManagement = React.lazy(() => import('./pages/PortfolioManagement'));
+const ExitsAnalysis = React.lazy(() => import('./pages/ExitsAnalysis'));
+const InsightsDashboard = React.lazy(() => import('./pages/InsightsDashboard'));
+const PortfolioOverview = React.lazy(() => import('./pages/PortfolioOverview'));
 const ScenarioComparison = React.lazy(() => import('./pages/ScenarioComparison'));
 
 function App() {
@@ -37,10 +39,26 @@ function App() {
                   } 
                 />
                 <Route 
+                  path="exits" 
+                  element={
+                    <Suspense fallback={<LoadingSpinner />}>
+                      <ExitsAnalysis />
+                    </Suspense>
+                  } 
+                />
+                <Route 
+                  path="insights" 
+                  element={
+                    <Suspense fallback={<LoadingSpinner />}>
+                      <InsightsDashboard />
+                    </Suspense>
+                  } 
+                />
+                <Route 
                   path="portfolio" 
                   element={
                     <Suspense fallback={<LoadingSpinner />}>
-                      <PortfolioManagement />
+                      <PortfolioOverview />
                     </Suspense>
                   } 
                 />
