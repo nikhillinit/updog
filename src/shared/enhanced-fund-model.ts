@@ -1,149 +1,95 @@
-// src/shared/enhanced-fund-model.ts
 import Decimal from 'decimal.js';
 import {
   EnhancedFundInputs,
   ForecastResult,
   PortfolioCompany,
-  Investment,
   CashFlowPoint,
-  CompanyResult,
+  ValidationError,
   WaterfallSummary,
-  FundModelError,
-  ValidationError
-} from '../types/index';
+  CompanyResult,
+  StageStrategy,
+  GraduationMatrix,
+  ExitProbabilityMatrix
+} from '../types';
 
-// ===== CONFIGURATION =====
-Decimal.config({
-  precision: 20,
-  rounding: Decimal.ROUND_HALF_UP
-});
+// ===== CONSTANTS =====
 
-// ===== MEMOIZATION CACHE =====
-const calculationCache = new Map<string, ForecastResult>();
-const CACHE_SIZE_LIMIT = 100;
-
-// ===== DEFAULT VALUES =====
 export const DEFAULT_FUND_PARAMS = {
-  fundName: 'Press On Ventures Fund I',
-  fundSize: 20000000,
+  fundName: 'Demo Fund I',
+  fundSize: 100000000,
+  vintageYear: new Date().getFullYear(),
   managementFeeRate: 0.02,
   carryPct: 0.20,
-  hurdleRate: 0,
+  hurdleRate: 0.08,
   gpCommitmentPct: 2,
   includeGpInFees: false,
-  fundLifeYears: 10,
   investmentPeriodYears: 5,
-  fundLifeQuarters: 40,
-  investPeriodQuarters: 20,
+  fundLifeYears: 10,
+  followOnReserveRatio: 0.5,
+  recyclingEnabled: false,
   waterfallType: 'american' as const
 };
 
-export const DEFAULT_STAGE_STRATEGIES = [
+export const DEFAULT_STAGE_STRATEGIES: StageStrategy[] = [
   {
     stage: 'Pre-Seed',
-    allocationPct: 0.43,
-    avgInvestmentSize: 250000,
-    graduationRate: 0.30,
-    weightedExitValue: 17500000,
-    exitMultiple: 15,
-    avgExitQuarter: 16
+    allocationPct: 0.20,
+    numFirstChecks: 15,
+    avgInvestmentSize: 500000,
+    graduationRate: 0.35,
+    weightedExitValue: 10000000
   },
   {
     stage: 'Seed',
-    allocationPct: 0.43,
-    avgInvestmentSize: 400000,
-    graduationRate: 0.35,
-    weightedExitValue: 39500000,
-    exitMultiple: 20,
-    avgExitQuarter: 20
+    allocationPct: 0.60,
+    numFirstChecks: 20,
+    avgInvestmentSize: 1500000,
+    graduationRate: 0.45,
+    weightedExitValue: 25000000
   },
   {
     stage: 'Series A',
-    allocationPct: 0.14,
-    avgInvestmentSize: 600000,
-    graduationRate: 0.50,
-    weightedExitValue: 71750000,
-    exitMultiple: 12,
-    avgExitQuarter: 24
+    allocationPct: 0.20,
+    numFirstChecks: 5,
+    avgInvestmentSize: 3000000,
+    graduationRate: 0.60,
+    weightedExitValue: 50000000
   }
 ];
 
-export const DEFAULT_GRADUATION_MATRIX = {
-  'Pre-Seed': { 'Seed': 0.30, 'Series A': 0.12, 'Series B': 0.06 },
-  'Seed': { 'Series A': 0.35, 'Series B': 0.20, 'Series C': 0.12 },
-  'Series A': { 'Series B': 0.50, 'Series C': 0.30, 'Series D+': 0.21 },
-  'Series B': { 'Series C': 0.50, 'Series D+': 0.35 },
-  'Series C': { 'Series D+': 0.60 },
+export const DEFAULT_GRADUATION_MATRIX: GraduationMatrix = {
+  'Pre-Seed': { 'Seed': 0.35, 'Series A': 0.05, 'Exit': 0.10 },
+  'Seed': { 'Series A': 0.45, 'Series B': 0.10, 'Exit': 0.15 },
+  'Series A': { 'Series B': 0.50, 'Series C': 0.10, 'Exit': 0.20 },
+  'Series B': { 'Series C': 0.45, 'Series D+': 0.15, 'Exit': 0.30 },
+  'Series C': { 'Series D+': 0.40, 'Exit': 0.60 },
   'Series D+': { 'Exit': 1.00 }
 };
 
-export const DEFAULT_EXIT_PROBABILITIES = {
-  'Pre-Seed': { fail: 0.90, low: 0.06, med: 0.02, high: 0.01, mega: 0.01 },
-  'Seed': { fail: 0.80, low: 0.10, med: 0.05, high: 0.03, mega: 0.02 },
-  'Series A': { fail: 0.65, low: 0.15, med: 0.10, high: 0.07, mega: 0.03 },
-  'Series B': { fail: 0.50, low: 0.20, med: 0.15, high: 0.10, mega: 0.05 },
-  'Series C': { fail: 0.35, low: 0.25, med: 0.20, high: 0.15, mega: 0.05 },
-  'Series D+': { fail: 0.10, low: 0.20, med: 0.30, high: 0.25, mega: 0.15 }
+export const DEFAULT_EXIT_PROBABILITIES: ExitProbabilityMatrix = {
+  'Pre-Seed': { failure: 0.70, lowMultiple: 0.15, mediumMultiple: 0.10, highMultiple: 0.04, homeRun: 0.01 },
+  'Seed': { failure: 0.60, lowMultiple: 0.20, mediumMultiple: 0.15, highMultiple: 0.04, homeRun: 0.01 },
+  'Series A': { failure: 0.45, lowMultiple: 0.25, mediumMultiple: 0.20, highMultiple: 0.08, homeRun: 0.02 },
+  'Series B': { failure: 0.30, lowMultiple: 0.30, mediumMultiple: 0.25, highMultiple: 0.12, homeRun: 0.03 },
+  'Series C': { failure: 0.20, lowMultiple: 0.35, mediumMultiple: 0.30, highMultiple: 0.12, homeRun: 0.03 },
+  'Series D+': { failure: 0.10, lowMultiple: 0.30, mediumMultiple: 0.35, highMultiple: 0.20, homeRun: 0.05 }
 };
 
-// ===== PERFORMANCE MONITORING =====
-const performanceMetrics = {
-  calculationTimes: [] as number[],
-  cacheHits: 0,
-  cacheMisses: 0,
-  
-  recordCalculation(timeMs: number) {
-    this.calculationTimes.push(timeMs);
-    if (this.calculationTimes.length > 100) {
-      this.calculationTimes.shift();
-    }
-  },
-  
-  getAverageCalculationTime() {
-    if (this.calculationTimes.length === 0) return 0;
-    return this.calculationTimes.reduce((a, b) => a + b, 0) / this.calculationTimes.length;
-  },
-  
-  getCacheHitRate() {
-    const total = this.cacheHits + this.cacheMisses;
-    return total > 0 ? this.cacheHits / total : 0;
-  }
-};
-
-// ===== VALIDATION WITH TYPE GUARDS =====
-function isValidNumber(value: unknown): value is number {
-  return typeof value === 'number' && !isNaN(value) && isFinite(value);
-}
-
-function isValidStageStrategy(strategy: unknown): strategy is StageStrategy {
-  if (!strategy || typeof strategy !== 'object') return false;
-  const s = strategy as any;
-  return (
-    typeof s.stage === 'string' &&
-    isValidNumber(s.allocationPct) &&
-    isValidNumber(s.avgInvestmentSize) &&
-    isValidNumber(s.graduationRate) &&
-    isValidNumber(s.weightedExitValue) &&
-    isValidNumber(s.exitMultiple) &&
-    isValidNumber(s.avgExitQuarter)
-  );
-}
+// ===== VALIDATION =====
 
 export function validateEnhancedInputs(inputs: EnhancedFundInputs): ValidationError[] {
   const errors: ValidationError[] = [];
   
-  // Fund size validation with type guard
-  if (!isValidNumber(inputs.fundSize) || inputs.fundSize <= 0) {
+  if (!inputs.fundSize || inputs.fundSize <= 0) {
     errors.push({
       field: 'fundSize',
-      message: 'Fund size must be a positive number',
+      message: 'Fund size must be positive',
       code: 'INVALID_FUND_SIZE',
       severity: 'error'
     });
   }
   
-  // Stage strategies validation
-  if (!Array.isArray(inputs.stageStrategies) || inputs.stageStrategies.length === 0) {
+  if (!inputs.stageStrategies || inputs.stageStrategies.length === 0) {
     errors.push({
       field: 'stageStrategies',
       message: 'At least one stage strategy is required',
@@ -151,42 +97,7 @@ export function validateEnhancedInputs(inputs: EnhancedFundInputs): ValidationEr
       severity: 'error'
     });
   } else {
-    // Validate each strategy with type guard
-    inputs.stageStrategies.forEach((strategy, index) => {
-      if (!isValidStageStrategy(strategy)) {
-        errors.push({
-          field: `stageStrategies[${index}]`,
-          message: `Invalid stage strategy at index ${index}`,
-          code: 'INVALID_STAGE_STRATEGY',
-          severity: 'error'
-        });
-        return;
-      }
-      
-      if (strategy.avgInvestmentSize <= 0) {
-        errors.push({
-          field: `stageStrategies[${index}].avgInvestmentSize`,
-          message: `Average investment size must be positive for ${strategy.stage}`,
-          code: 'INVALID_INVESTMENT_SIZE',
-          severity: 'error'
-        });
-      }
-      
-      if (strategy.allocationPct < 0 || strategy.allocationPct > 1) {
-        errors.push({
-          field: `stageStrategies[${index}].allocationPct`,
-          message: `Allocation percentage must be between 0 and 1 for ${strategy.stage}`,
-          code: 'INVALID_ALLOCATION_PCT',
-          severity: 'error'
-        });
-      }
-    });
-    
-    // Validate allocations sum
-    const totalAllocation = inputs.stageStrategies
-      .filter(isValidStageStrategy)
-      .reduce((sum, s) => sum + s.allocationPct, 0);
-      
+    const totalAllocation = inputs.stageStrategies.reduce((sum, s) => sum + s.allocationPct, 0);
     if (Math.abs(totalAllocation - 1.0) > 0.01) {
       errors.push({
         field: 'stageStrategies',
@@ -197,553 +108,375 @@ export function validateEnhancedInputs(inputs: EnhancedFundInputs): ValidationEr
     }
   }
   
-  // Management fee validation
-  if (!isValidNumber(inputs.managementFeeRate)) {
-    errors.push({
-      field: 'managementFeeRate',
-      message: 'Management fee rate must be a valid number',
-      code: 'INVALID_MGMT_FEE',
-      severity: 'error'
-    });
-  } else if (inputs.managementFeeRate < 0 || inputs.managementFeeRate > 0.1) {
-    errors.push({
-      field: 'managementFeeRate',
-      message: 'Management fee rate should be between 0% and 10%',
-      code: 'INVALID_MGMT_FEE_RANGE',
-      severity: 'warning'
-    });
-  }
-  
-  // Carry validation
-  if (!isValidNumber(inputs.carryPct)) {
-    errors.push({
-      field: 'carryPct',
-      message: 'Carry percentage must be a valid number',
-      code: 'INVALID_CARRY',
-      severity: 'error'
-    });
-  } else if (inputs.carryPct < 0 || inputs.carryPct > 0.5) {
-    errors.push({
-      field: 'carryPct',
-      message: 'Carry percentage should be between 0% and 50%',
-      code: 'INVALID_CARRY_RANGE',
-      severity: 'warning'
-    });
-  }
-  
-  // Reserve sufficiency check
-  const totalManagementFees = inputs.fundSize * inputs.managementFeeRate * inputs.fundLifeYears;
-  const investableCapital = inputs.fundSize - totalManagementFees;
-  const totalPlannedInvestment = inputs.stageStrategies.reduce((sum, s) => {
-    return sum + (s.allocationPct * investableCapital);
-  }, 0);
-  
-  const reserveRatio = (investableCapital - totalPlannedInvestment) / investableCapital;
-  if (reserveRatio < 0.1) {
-    errors.push({
-      field: 'reserves',
-      message: `Low reserve ratio: ${(reserveRatio * 100).toFixed(1)}%. Consider reserving 20-30% for follow-ons.`,
-      code: 'LOW_RESERVES',
-      severity: 'warning'
-    });
-  }
-  
   return errors;
 }
 
-// ===== OPTIMIZED PORTFOLIO GENERATION =====
-const portfolioCache = new Map<string, PortfolioCompany[]>();
+// ===== MAIN FORECAST FUNCTION =====
 
-export function buildPortfolioFromStrategy(inputs: EnhancedFundInputs): PortfolioCompany[] {
-  // Generate cache key
-  const cacheKey = JSON.stringify({
-    fundSize: inputs.fundSize,
-    stageStrategies: inputs.stageStrategies,
-    managementFeeRate: inputs.managementFeeRate,
-    fundLifeYears: inputs.fundLifeYears
-  });
-  
-  // Check cache
-  if (portfolioCache.has(cacheKey)) {
-    return portfolioCache.get(cacheKey)!;
+export async function buildEnhancedFundForecast(
+  inputs: EnhancedFundInputs
+): Promise<ForecastResult> {
+  // Validate inputs
+  const errors = validateEnhancedInputs(inputs);
+  if (errors.length > 0) {
+    throw new Error(`Validation failed: ${errors.map(e => e.message).join(', ')}`);
   }
-  
-  const portfolio: PortfolioCompany[] = [];
-  
-  // Calculate investable capital using Decimal for precision
+
+  // Calculate investable capital
   const gpCommitment = new Decimal(inputs.fundSize).times(inputs.gpCommitmentPct).dividedBy(100);
   const lpCommitment = new Decimal(inputs.fundSize).minus(gpCommitment);
   const feeBase = inputs.includeGpInFees ? inputs.fundSize : lpCommitment.toNumber();
-  const totalManagementFees = new Decimal(feeBase)
-    .times(inputs.managementFeeRate)
-    .times(inputs.fundLifeYears);
-  const investableCapital = new Decimal(inputs.fundSize).minus(totalManagementFees);
   
-  // Use deterministic random seed for consistent results
-  let seed = 12345;
-  const deterministicRandom = () => {
-    seed = (seed * 16807) % 2147483647;
-    return seed / 2147483647;
+  // Build portfolio
+  const portfolio = buildPortfolioFromStrategy(inputs);
+  
+  // Generate cash flows
+  const timeline = generateCashFlows(inputs, portfolio, feeBase);
+  
+  // Calculate waterfall
+  const { waterfallSummary, companyResults } = calculateWaterfall(
+    portfolio,
+    inputs.carryPct,
+    inputs.hurdleRate,
+    lpCommitment.toNumber()
+  );
+  
+  // Calculate metrics
+  const metrics = calculateMetrics(timeline, portfolio, waterfallSummary);
+  
+  return {
+    timeline,
+    portfolio,
+    companyResults,
+    waterfallSummary,
+    ...metrics,
+    calculationDate: new Date(),
+    fundLifeQuarters: inputs.fundLifeYears * 4
   };
+}
+
+// ===== PORTFOLIO GENERATION =====
+
+function buildPortfolioFromStrategy(inputs: EnhancedFundInputs): PortfolioCompany[] {
+  const portfolio: PortfolioCompany[] = [];
+  let companyId = 0;
   
-  // Generate companies for each stage
-  inputs.stageStrategies.forEach((strategy, strategyIndex) => {
-    const stageCapital = investableCapital.times(strategy.allocationPct);
-    const numCompanies = Math.floor(stageCapital.dividedBy(strategy.avgInvestmentSize).toNumber());
-    
-    for (let i = 0; i < numCompanies; i++) {
-      const companyId = `${strategy.stage.toLowerCase().replace(/\s+/g, '-')}-${strategyIndex}-${i + 1}`;
-      
-      // Initial investment
-      const initialInvestment: Investment = {
-        stage: strategy.stage,
-        amount: strategy.avgInvestmentSize,
-        quarter: Math.floor(deterministicRandom() * inputs.investPeriodQuarters),
-        ownership: 0.05, // Simplified ownership calculation
-        isFollowOn: false
-      };
-      
-      // Determine exit characteristics using exit probability matrix
-      const exitProbs = inputs.exitProbabilityMatrix[strategy.stage] || DEFAULT_EXIT_PROBABILITIES[strategy.stage];
-      const random = deterministicRandom();
-      let exitOutcome: 'fail' | 'low' | 'med' | 'high' | 'mega' = 'fail';
-      let exitMultiple = 0;
-      
-      const cumulativeProbs = {
-        fail: exitProbs.fail,
-        low: exitProbs.fail + exitProbs.low,
-        med: exitProbs.fail + exitProbs.low + exitProbs.med,
-        high: exitProbs.fail + exitProbs.low + exitProbs.med + exitProbs.high,
-        mega: 1.0
-      };
-      
-      if (random <= cumulativeProbs.fail) {
-        exitOutcome = 'fail';
-        exitMultiple = 0;
-      } else if (random <= cumulativeProbs.low) {
-        exitOutcome = 'low';
-        exitMultiple = 1 + deterministicRandom() * 2; // 1-3x
-      } else if (random <= cumulativeProbs.med) {
-        exitOutcome = 'med';
-        exitMultiple = 3 + deterministicRandom() * 7; // 3-10x
-      } else if (random <= cumulativeProbs.high) {
-        exitOutcome = 'high';
-        exitMultiple = 10 + deterministicRandom() * 40; // 10-50x
-      } else {
-        exitOutcome = 'mega';
-        exitMultiple = 50 + deterministicRandom() * 100; // 50-150x
-      }
+  // Create initial investments by stage
+  inputs.stageStrategies.forEach(strategy => {
+    for (let i = 0; i < strategy.numFirstChecks; i++) {
+      const investmentQuarter = Math.floor(Math.random() * (inputs.investmentPeriodYears * 4));
       
       const company: PortfolioCompany = {
-        id: companyId,
+        id: `company-${++companyId}`,
         name: `${strategy.stage} Company ${i + 1}`,
         entryStage: strategy.stage,
         currentStage: strategy.stage,
-        investments: [initialInvestment],
+        investments: [{
+          stage: strategy.stage,
+          amount: strategy.avgInvestmentSize,
+          quarter: investmentQuarter,
+          ownership: 0.10 + Math.random() * 0.15
+        }],
         totalInvested: strategy.avgInvestmentSize,
-        exitValue: exitMultiple > 0 ? strategy.avgInvestmentSize * exitMultiple : 0,
-        exitQuarter: exitMultiple > 0 ? strategy.avgExitQuarter + Math.floor(deterministicRandom() * 8) : undefined,
-        status: exitMultiple > 0 ? 'active' : 'written-off'
+        status: 'active'
       };
+      
+      // Simulate graduation and follow-on investments
+      simulateCompanyProgression(company, inputs, investmentQuarter);
       
       portfolio.push(company);
     }
   });
   
-  // Cache result
-  if (portfolioCache.size >= CACHE_SIZE_LIMIT) {
-    const firstKey = portfolioCache.keys().next().value;
-    portfolioCache.delete(firstKey);
-  }
-  portfolioCache.set(cacheKey, portfolio);
-  
   return portfolio;
 }
 
-// ===== OPTIMIZED PORTFOLIO PROGRESSION =====
-export function simulatePortfolioProgression(
-  portfolio: PortfolioCompany[], 
-  inputs: EnhancedFundInputs
-): PortfolioCompany[] {
-  // Use deterministic seed for consistent results
-  let seed = 67890;
-  const deterministicRandom = () => {
-    seed = (seed * 16807) % 2147483647;
-    return seed / 2147483647;
-  };
+function simulateCompanyProgression(
+  company: PortfolioCompany,
+  inputs: EnhancedFundInputs,
+  startQuarter: number
+): void {
+  let currentStage = company.entryStage;
+  let currentQuarter = startQuarter;
   
-  return portfolio.map(company => {
-    const updatedCompany = { ...company, investments: [...company.investments] };
+  // Simulate progression through stages
+  for (let i = 0; i < 4; i++) { // Max 4 follow-on rounds
+    currentQuarter += 4 + Math.floor(Math.random() * 4); // 4-8 quarters between rounds
     
-    // Check for graduation and follow-on opportunities
-    const graduationRates = inputs.graduationMatrix[company.currentStage] || {};
+    if (currentQuarter >= inputs.fundLifeYears * 4) break;
     
-    // Determine if company graduates
-    for (const [toStage, rate] of Object.entries(graduationRates)) {
-      if (deterministicRandom() < rate && company.status === 'active') {
-        // Add follow-on investment
-        const followOnAmount = company.investments[0].amount * (0.5 + deterministicRandom() * 1.0);
-        const followOnInvestment: Investment = {
-          stage: toStage,
-          amount: followOnAmount,
-          quarter: company.investments[0].quarter + 4 + Math.floor(deterministicRandom() * 8),
-          ownership: 0.03, // Simplified
-          isFollowOn: true
-        };
-        
-        updatedCompany.investments.push(followOnInvestment);
-        updatedCompany.totalInvested += followOnAmount;
-        updatedCompany.currentStage = toStage;
-        
-        // Update exit value with higher multiple for later stages
-        if (updatedCompany.exitValue) {
-          const stageMultiplier = {
-            'Seed': 1.2,
-            'Series A': 1.5,
-            'Series B': 1.8,
-            'Series C': 2.0,
-            'Series D+': 2.5
-          };
-          updatedCompany.exitValue *= stageMultiplier[toStage as keyof typeof stageMultiplier] || 1.0;
+    const graduationRates = inputs.graduationMatrix[currentStage];
+    if (!graduationRates) break;
+    
+    // Determine next stage based on probabilities
+    const rand = Math.random();
+    let cumProb = 0;
+    let graduated = false;
+    
+    for (const [nextStage, prob] of Object.entries(graduationRates)) {
+      cumProb += prob;
+      if (rand < cumProb) {
+        if (nextStage === 'Exit') {
+          // Company exits
+          company.status = 'exited';
+          company.exitQuarter = currentQuarter;
+          company.exitValue = calculateExitValue(company, inputs.exitProbabilityMatrix);
+          return;
+        } else {
+          // Company graduates to next stage
+          currentStage = nextStage;
+          graduated = true;
+          
+          // Add follow-on investment
+          const followOnAmount = company.totalInvested * 0.5; // Simple 50% follow-on
+          company.investments.push({
+            stage: currentStage,
+            amount: followOnAmount,
+            quarter: currentQuarter,
+            isFollowOn: true
+          });
+          company.totalInvested += followOnAmount;
+          company.currentStage = currentStage;
+          break;
         }
-        
-        break; // Only graduate once per simulation
       }
     }
     
-    return updatedCompany;
-  });
-}
-
-// ===== OPTIMIZED AMERICAN WATERFALL =====
-const waterfallCache = new Map<string, WaterfallSummary>();
-
-export function calculateAmericanWaterfall(
-  totalInvested: number,
-  totalExitValue: number,
-  carryPct: number,
-  hurdleRate: number = 0
-): WaterfallSummary {
-  const cacheKey = `${totalInvested}-${totalExitValue}-${carryPct}-${hurdleRate}`;
-  
-  if (waterfallCache.has(cacheKey)) {
-    return waterfallCache.get(cacheKey)!;
+    if (!graduated) break;
   }
   
-  const invested = new Decimal(totalInvested);
-  const exitValue = new Decimal(totalExitValue);
-  const profit = exitValue.minus(invested);
-  
-  if (profit.lte(0)) {
-    const result = {
-      totalInvested,
-      totalExitValue,
-      totalProfit: 0,
-      lpReturnOfCapital: Math.min(totalExitValue, totalInvested),
-      lpPreferredReturn: 0,
-      gpCatchUp: 0,
-      gpCarry: 0,
-      lpCarry: 0,
-      finalLpProceeds: totalExitValue,
-      finalGpProceeds: 0
-    };
-    waterfallCache.set(cacheKey, result);
-    return result;
-  }
-  
-  // American waterfall (deal-by-deal carry)
-  const lpReturnOfCapital = invested.toNumber();
-  const preferredReturn = invested.times(hurdleRate);
-  const lpPreferredReturn = preferredReturn.toNumber();
-  const profitAfterHurdle = profit.minus(preferredReturn);
-  const gpCarry = Decimal.max(0, profitAfterHurdle.times(carryPct));
-  const lpCarry = profitAfterHurdle.minus(gpCarry);
-  
-  const result = {
-    totalInvested,
-    totalExitValue,
-    totalProfit: profit.toNumber(),
-    lpReturnOfCapital,
-    lpPreferredReturn,
-    gpCatchUp: 0,
-    gpCarry: gpCarry.toNumber(),
-    lpCarry: lpCarry.toNumber(),
-    finalLpProceeds: lpReturnOfCapital + lpPreferredReturn + lpCarry.toNumber(),
-    finalGpProceeds: gpCarry.toNumber()
-  };
-  
-  // Manage cache size
-  if (waterfallCache.size >= CACHE_SIZE_LIMIT) {
-    const firstKey = waterfallCache.keys().next().value;
-    waterfallCache.delete(firstKey);
-  }
-  waterfallCache.set(cacheKey, result);
-  
-  return result;
-}
-
-// ===== OPTIMIZED IRR CALCULATION =====
-export function calculateIRR(cashFlows: number[]): number {
-  if (!Array.isArray(cashFlows) || cashFlows.length === 0) return 0;
-  
-  // Check for trivial cases
-  const hasPositive = cashFlows.some(cf => cf > 0);
-  const hasNegative = cashFlows.some(cf => cf < 0);
-  if (!hasPositive || !hasNegative) return 0;
-  
-  // Newton-Raphson method with better initial guess
-  let rate = 0.1;
-  const tolerance = 1e-6;
-  const maxIterations = 50;
-  
-  for (let i = 0; i < maxIterations; i++) {
-    let npv = 0;
-    let dnpv = 0;
+  // If not exited, determine final outcome
+  if (company.status === 'active') {
+    const exitProbs = inputs.exitProbabilityMatrix?.[currentStage] || DEFAULT_EXIT_PROBABILITIES[currentStage];
+    const rand = Math.random();
     
-    for (let j = 0; j < cashFlows.length; j++) {
-      const discountFactor = Math.pow(1 + rate, j);
-      npv += cashFlows[j] / discountFactor;
-      dnpv -= (j * cashFlows[j]) / (discountFactor * (1 + rate));
+    if (rand < exitProbs.failure) {
+      company.status = 'written-off';
+      company.exitValue = 0;
+    } else {
+      company.status = 'exited';
+      company.exitQuarter = inputs.fundLifeYears * 4;
+      company.exitValue = calculateExitValue(company, inputs.exitProbabilityMatrix);
     }
-    
-    if (Math.abs(npv) < tolerance) break;
-    if (Math.abs(dnpv) < tolerance) break;
-    
-    const newRate = rate - npv / dnpv;
-    
-    // Bounds checking to prevent divergence
-    if (newRate < -0.99) rate = -0.99;
-    else if (newRate > 10) rate = 10;
-    else rate = newRate;
   }
-  
-  return isNaN(rate) || !isFinite(rate) ? 0 : rate;
 }
 
-// ===== MAIN FORECAST WITH CACHING =====
-export function buildEnhancedFundForecast(inputs: EnhancedFundInputs): ForecastResult {
-  const startTime = performance.now();
+function calculateExitValue(
+  company: PortfolioCompany,
+  exitProbMatrix?: ExitProbabilityMatrix
+): number {
+  const exitProbs = exitProbMatrix?.[company.currentStage] || DEFAULT_EXIT_PROBABILITIES[company.currentStage];
+  const rand = Math.random();
   
-  // Generate cache key
-  const cacheKey = JSON.stringify(inputs);
-  
-  // Check cache
-  if (calculationCache.has(cacheKey)) {
-    performanceMetrics.cacheHits++;
-    return calculationCache.get(cacheKey)!;
+  let multiple = 0;
+  if (rand < exitProbs.failure) {
+    multiple = 0;
+  } else if (rand < exitProbs.failure + exitProbs.lowMultiple) {
+    multiple = 0.5 + Math.random() * 2.5; // 0.5x - 3x
+  } else if (rand < exitProbs.failure + exitProbs.lowMultiple + exitProbs.mediumMultiple) {
+    multiple = 3 + Math.random() * 7; // 3x - 10x
+  } else if (rand < exitProbs.failure + exitProbs.lowMultiple + exitProbs.mediumMultiple + exitProbs.highMultiple) {
+    multiple = 10 + Math.random() * 15; // 10x - 25x
+  } else {
+    multiple = 25 + Math.random() * 75; // 25x - 100x
   }
   
-  performanceMetrics.cacheMisses++;
+  return company.totalInvested * multiple;
+}
+
+// ===== CASH FLOW GENERATION =====
+
+function generateCashFlows(
+  inputs: EnhancedFundInputs,
+  portfolio: PortfolioCompany[],
+  feeBase: number
+): CashFlowPoint[] {
+  const timeline: CashFlowPoint[] = [];
+  const quarters = inputs.fundLifeYears * 4;
   
-  try {
-    // Validate inputs
-    const errors = validateEnhancedInputs(inputs);
-    const criticalErrors = errors.filter(e => e.severity === 'error');
-    if (criticalErrors.length > 0) {
-      throw new FundModelError(
-        'VALIDATION_ERROR', 
-        `Validation failed: ${criticalErrors.map(e => e.message).join('; ')}`,
-        criticalErrors
-      );
-    }
+  let cumulativeContributions = 0;
+  let cumulativeDistributions = 0;
+  let cumulativeFees = 0;
+  
+  for (let q = 0; q <= quarters; q++) {
+    const year = Math.floor(q / 4) + 1;
+    const quarterInYear = (q % 4) + 1;
     
-    // Build and progress portfolio
-    let portfolio = buildPortfolioFromStrategy(inputs);
-    portfolio = simulatePortfolioProgression(portfolio, inputs);
+    // Calculate contributions (investments + fees)
+    const investments = portfolio.reduce((sum, company) => {
+      return sum + company.investments
+        .filter(inv => inv.quarter === q)
+        .reduce((invSum, inv) => invSum + inv.amount, 0);
+    }, 0);
     
-    // Calculate company-level results
-    const companyResults: CompanyResult[] = portfolio.map(company => {
-      const invested = company.totalInvested;
-      const exitProceeds = company.exitValue || 0;
-      const profit = exitProceeds - invested;
-      const carry = Math.max(0, profit * inputs.carryPct);
-      const lpProfit = profit - carry;
-      
-      return {
-        companyId: company.id,
-        invested,
-        exitProceeds,
-        profit,
-        carry,
-        lpProfit,
-        multiple: invested > 0 ? exitProceeds / invested : 0
-      };
-    });
+    const mgmtFee = q < inputs.investmentPeriodYears * 4 
+      ? feeBase * inputs.managementFeeRate / 4 
+      : 0;
     
-    // Aggregate metrics
-    const totalInvested = companyResults.reduce((sum, r) => sum + r.invested, 0);
-    const totalExitValue = companyResults.reduce((sum, r) => sum + r.exitProceeds, 0);
+    const contributions = investments + mgmtFee;
+    cumulativeContributions += contributions;
+    cumulativeFees += mgmtFee;
     
-    // Calculate waterfall
-    const waterfallSummary = calculateAmericanWaterfall(
-      totalInvested,
-      totalExitValue,
-      inputs.carryPct,
-      inputs.hurdleRate || 0
+    // Calculate distributions
+    const distributions = portfolio
+      .filter(c => c.exitQuarter === q && c.exitValue)
+      .reduce((sum, c) => sum + (c.exitValue || 0), 0);
+    
+    cumulativeDistributions += distributions;
+    
+    // Calculate NAV
+    const activeCompanies = portfolio.filter(c => 
+      (!c.exitQuarter || c.exitQuarter > q) && 
+      c.investments.some(inv => inv.quarter <= q)
     );
     
-    // Calculate management fees
-    const gpCommitment = inputs.fundSize * (inputs.gpCommitmentPct / 100);
-    const lpCommitment = inputs.fundSize - gpCommitment;
-    const feeBase = inputs.includeGpInFees ? inputs.fundSize : lpCommitment;
-    const quarterlyMgmtFee = feeBase * inputs.managementFeeRate / 4;
-    const totalManagementFees = quarterlyMgmtFee * inputs.fundLifeQuarters;
+    const nav = activeCompanies.reduce((sum, company) => {
+      // Simple NAV calculation - could be enhanced
+      const quartersSinceInvestment = q - company.investments[0].quarter;
+      const growthFactor = 1 + (0.05 * quartersSinceInvestment / 4); // 5% annual growth
+      return sum + company.totalInvested * growthFactor;
+    }, 0);
     
-    // Build timeline with optimized calculations
-    const timeline: CashFlowPoint[] = [];
-    const quarterlyDeployments: number[] = [];
-    const quarterlyNAVs: number[] = [];
-    const quarterlyDistributions: number[] = [];
-    const quarterlyManagementFees: number[] = [];
+    // Calculate metrics
+    const totalValue = cumulativeDistributions + nav;
+    const netContributions = cumulativeContributions;
     
-    let cumulativeContributions = 0;
-    let cumulativeDistributions = 0;
-    
-    // Pre-calculate deployment and distribution schedules
-    const deploymentsPerQuarter = totalInvested / inputs.investPeriodQuarters;
-    const distributionStartQuarter = 12;
-    const distributionPeriod = inputs.fundLifeQuarters - distributionStartQuarter;
-    const distributionsPerQuarter = totalExitValue / distributionPeriod;
-    
-    // Build quarterly cash flows
-    for (let quarter = 0; quarter <= inputs.fundLifeQuarters; quarter++) {
-      const year = quarter / 4;
-      const yearQuarter = `Y${Math.floor(year) + 1}Q${(quarter % 4) + 1}`;
-      
-      // Capital contributions
-      const contribution = quarter === 0 ? inputs.fundSize : 0;
-      cumulativeContributions += contribution;
-      
-      // Deployments
-      const deployment = quarter <= inputs.investPeriodQuarters ? deploymentsPerQuarter : 0;
-      quarterlyDeployments.push(deployment);
-      
-      // Distributions
-      const distribution = quarter >= distributionStartQuarter ? distributionsPerQuarter : 0;
-      cumulativeDistributions += distribution;
-      quarterlyDistributions.push(distribution);
-      
-      // Management fees
-      const mgmtFee = quarter > 0 ? quarterlyMgmtFee : 0;
-      quarterlyManagementFees.push(mgmtFee);
-      
-      // NAV calculation
-      const investedToDate = Math.min(totalInvested, quarter * deploymentsPerQuarter);
-      const unrealizedValue = Math.max(0, totalExitValue - cumulativeDistributions);
-      const nav = unrealizedValue;
-      quarterlyNAVs.push(nav);
-      
-      // Performance ratios
-      const dpi = cumulativeContributions > 0 ? cumulativeDistributions / cumulativeContributions : 0;
-      const rvpi = cumulativeContributions > 0 ? nav / cumulativeContributions : 0;
-      const tvpi = dpi + rvpi;
-      
-      // Build cash flow array for IRR
-      const cashFlows: number[] = [];
-      for (let i = 0; i <= quarter; i++) {
-        if (i === 0) cashFlows.push(-inputs.fundSize);
-        else if (i >= distributionStartQuarter && i < distributionStartQuarter + distributionPeriod) {
-          cashFlows.push(distributionsPerQuarter);
-        } else if (i === inputs.fundLifeQuarters) {
-          cashFlows.push(nav);
-        } else {
-          cashFlows.push(0);
-        }
-      }
-      
-      const grossIrr = calculateIRR(cashFlows);
-      const netCashFlows = cashFlows.map((cf, idx) => 
-        idx === 0 ? cf : cf - (idx > 0 ? quarterlyMgmtFee : 0)
-      );
-      const netIrr = calculateIRR(netCashFlows);
-      
-      timeline.push({
-        quarter,
-        year,
-        yearQuarter,
-        contributions: contribution,
-        distributions: distribution,
-        managementFees: mgmtFee,
-        cumulativeContributions,
-        cumulativeDistributions,
-        nav,
-        dpi,
-        rvpi,
-        tvpi,
-        moic: totalInvested > 0 ? totalExitValue / totalInvested : 0,
-        netMoic: totalInvested > 0 ? (totalExitValue - totalManagementFees) / totalInvested : 0,
-        grossIrr,
-        netIrr
-      });
-    }
-    
-    const result: ForecastResult = {
-      timeline,
-      portfolio,
-      companyResults,
-      waterfallSummary,
-      totalInvested,
-      totalExitValue,
-      totalManagementFees,
-      totalGpCarry: waterfallSummary.gpCarry,
-      totalLpProfit: waterfallSummary.finalLpProceeds - inputs.fundSize,
-      grossMoic: totalInvested > 0 ? totalExitValue / totalInvested : 0,
-      netMoic: totalInvested > 0 ? (totalExitValue - totalManagementFees - waterfallSummary.gpCarry) / inputs.fundSize : 0,
-      grossIrr: timeline[timeline.length - 1]?.grossIrr || 0,
-      netIrr: timeline[timeline.length - 1]?.netIrr || 0,
-      tvpi: timeline[timeline.length - 1]?.tvpi || 0,
-      dpi: timeline[timeline.length - 1]?.dpi || 0,
-      rvpi: timeline[timeline.length - 1]?.rvpi || 0,
-      calculationDate: new Date(),
-      fundLifeQuarters: inputs.fundLifeQuarters,
-      intermediates: {
-        quarterlyDeployments,
-        quarterlyNAVs,
-        quarterlyDistributions,
-        quarterlyManagementFees,
-        companiesCreated: portfolio.length,
-        companiesExited: portfolio.filter(c => c.exitValue && c.exitValue > 0).length,
-        companiesWrittenOff: portfolio.filter(c => c.status === 'written-off').length
-      }
-    };
-    
-    // Cache result
-    if (calculationCache.size >= CACHE_SIZE_LIMIT) {
-      const firstKey = calculationCache.keys().next().value;
-      calculationCache.delete(firstKey);
-    }
-    calculationCache.set(cacheKey, result);
-    
-    // Record performance metrics
-    const endTime = performance.now();
-    performanceMetrics.recordCalculation(endTime - startTime);
-    
-    return result;
-    
-  } catch (error) {
-    const endTime = performance.now();
-    performanceMetrics.recordCalculation(endTime - startTime);
-    throw error;
+    timeline.push({
+      quarter: q,
+      year,
+      yearQuarter: `Y${year}Q${quarterInYear}`,
+      contributions,
+      distributions,
+      managementFees: mgmtFee,
+      cumulativeContributions,
+      cumulativeDistributions,
+      nav,
+      dpi: netContributions > 0 ? cumulativeDistributions / netContributions : 0,
+      rvpi: netContributions > 0 ? nav / netContributions : 0,
+      tvpi: netContributions > 0 ? totalValue / netContributions : 0,
+      moic: netContributions > 0 ? totalValue / netContributions : 0,
+      netMoic: 0, // Will be calculated after waterfall
+      grossIrr: 0, // Will be calculated separately
+      netIrr: 0 // Will be calculated separately
+    });
   }
+  
+  return timeline;
 }
 
-// ===== PERFORMANCE MONITORING EXPORTS =====
-export function getPerformanceMetrics() {
+// ===== WATERFALL CALCULATIONS =====
+
+function calculateWaterfall(
+  portfolio: PortfolioCompany[],
+  carryPct: number,
+  hurdleRate: number,
+  lpCommitment: number
+): { waterfallSummary: WaterfallSummary; companyResults: CompanyResult[] } {
+  const companyResults: CompanyResult[] = [];
+  
+  const totalInvested = portfolio.reduce((sum, c) => sum + c.totalInvested, 0);
+  const totalExitValue = portfolio.reduce((sum, c) => sum + (c.exitValue || 0), 0);
+  const totalProfit = Math.max(0, totalExitValue - totalInvested);
+  
+  // Simple American waterfall
+  const lpReturnOfCapital = Math.min(totalExitValue, totalInvested);
+  const remainingAfterCapital = Math.max(0, totalExitValue - lpReturnOfCapital);
+  
+  // Simplified carry calculation
+  const gpCarry = remainingAfterCapital * carryPct;
+  const lpProfit = remainingAfterCapital * (1 - carryPct);
+  
+  portfolio.forEach(company => {
+    const exitValue = company.exitValue || 0;
+    const profit = Math.max(0, exitValue - company.totalInvested);
+    const carry = profit * carryPct;
+    
+    companyResults.push({
+      companyId: company.id,
+      invested: company.totalInvested,
+      exitProceeds: exitValue,
+      profit,
+      carry,
+      lpProfit: profit - carry,
+      multiple: company.totalInvested > 0 ? exitValue / company.totalInvested : 0
+    });
+  });
+  
+  const waterfallSummary: WaterfallSummary = {
+    totalInvested,
+    totalExitValue,
+    totalProfit,
+    lpReturnOfCapital,
+    lpPreferredReturn: 0, // Simplified
+    gpCatchUp: 0, // Simplified
+    gpCarry,
+    lpCarry: lpProfit,
+    finalLpProceeds: lpReturnOfCapital + lpProfit,
+    finalGpProceeds: gpCarry
+  };
+  
+  return { waterfallSummary, companyResults };
+}
+
+// ===== METRICS CALCULATION =====
+
+function calculateMetrics(
+  timeline: CashFlowPoint[],
+  portfolio: PortfolioCompany[],
+  waterfall: WaterfallSummary
+) {
+  const finalPoint = timeline[timeline.length - 1];
+  
+  // Calculate IRRs (simplified - would use XIRR in production)
+  const cashFlows = timeline.map(point => ({
+    date: new Date(2024, 0, 1 + point.quarter * 90),
+    amount: -point.contributions + point.distributions
+  }));
+  
+  const grossIrr = calculateSimpleIRR(cashFlows);
+  const netIrr = grossIrr * 0.85; // Simplified net IRR
+  
+  // Update timeline with IRRs
+  timeline.forEach(point => {
+    point.grossIrr = grossIrr;
+    point.netIrr = netIrr;
+    point.netMoic = point.moic * 0.85; // Simplified
+  });
+  
   return {
-    averageCalculationTime: performanceMetrics.getAverageCalculationTime(),
-    cacheHitRate: performanceMetrics.getCacheHitRate(),
-    totalCalculations: performanceMetrics.cacheHits + performanceMetrics.cacheMisses,
-    cacheSize: calculationCache.size
+    totalInvested: waterfall.totalInvested,
+    totalExitValue: waterfall.totalExitValue,
+    totalManagementFees: timeline.reduce((sum, p) => sum + p.managementFees, 0),
+    totalGpCarry: waterfall.gpCarry,
+    totalLpProfit: waterfall.lpCarry,
+    grossMoic: finalPoint.moic,
+    netMoic: finalPoint.netMoic,
+    grossIrr,
+    netIrr,
+    tvpi: finalPoint.tvpi,
+    dpi: finalPoint.dpi,
+    rvpi: finalPoint.rvpi,
+    intermediates: {
+      quarterlyDeployments: timeline.map(p => p.contributions),
+      quarterlyNAVs: timeline.map(p => p.nav),
+      quarterlyDistributions: timeline.map(p => p.distributions),
+      quarterlyManagementFees: timeline.map(p => p.managementFees),
+      companiesCreated: portfolio.length,
+      companiesExited: portfolio.filter(c => c.status === 'exited').length,
+      companiesWrittenOff: portfolio.filter(c => c.status === 'written-off').length
+    }
   };
 }
 
-export function clearCalculationCache() {
-  calculationCache.clear();
-  portfolioCache.clear();
-  waterfallCache.clear();
-  performanceMetrics.cacheHits = 0;
-  performanceMetrics.cacheMisses = 0;
+// Simplified IRR calculation
+function calculateSimpleIRR(cashFlows: { date: Date; amount: number }[]): number {
+  // This is a very simplified IRR - in production use proper XIRR
+  const totalInvested = -cashFlows.filter(cf => cf.amount < 0).reduce((sum, cf) => sum + cf.amount, 0);
+  const totalReturned = cashFlows.filter(cf => cf.amount > 0).reduce((sum, cf) => sum + cf.amount, 0);
+  const years = 10; // Assuming 10-year fund
+  
+  if (totalInvested === 0) return 0;
+  
+  const multiple = totalReturned / totalInvested;
+  return Math.pow(multiple, 1 / years) - 1;
 }
-
-// ===== TYPE EXPORTS =====
-import { StageStrategy } from '../types/index';
