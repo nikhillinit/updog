@@ -1,6 +1,5 @@
 // src/context/FundContext.tsx
-
-import React, { createContext, useContext, useState, useCallback, useMemo, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import {
   EnhancedFundInputs,
   ForecastResult,
@@ -17,13 +16,38 @@ import {
   DEFAULT_STAGE_STRATEGIES,
   DEFAULT_GRADUATION_MATRIX,
   DEFAULT_EXIT_PROBABILITIES,
-  validateEnhancedInputs
+  validateEnhancedInputs,
+  getPerformanceMetrics,
+  clearCalculationCache
 } from '../shared/enhanced-fund-model';
 
-// ===== CONTEXT INTERFACES =====
+// ===== WEB WORKER FOR BACKGROUND CALCULATIONS =====
+const WORKER_SCRIPT = `
+self.onmessage = async function(e) {
+  const { type, payload } = e.data;
+  
+  if (type === 'CALCULATE') {
+    try {
+      // Import the calculation module in worker context
+      const module = await import('/src/shared/enhanced-fund-model.ts');
+      const result = module.buildEnhancedFundForecast(payload);
+      
+      self.postMessage({
+        type: 'CALCULATION_COMPLETE',
+        payload: result
+      });
+    } catch (error) {
+      self.postMessage({
+        type: 'CALCULATION_ERROR',
+        payload: error.message
+      });
+    }
+  }
+};
+`;
 
+// ===== CONTEXT INTERFACES =====
 interface FundState extends EnhancedFundInputs {
-  // Additional state properties
   isDirty: boolean;
   isCalculating: boolean;
   lastCalculation?: Date;
@@ -34,6 +58,13 @@ interface FundState extends EnhancedFundInputs {
 interface FundContextValue extends FundState {
   // Results
   forecastResult?: ForecastResult;
+  
+  // Performance Metrics
+  performanceMetrics: {
+    averageCalculationTime: number;
+    cacheHitRate: number;
+    totalCalculations: number;
+  };
   
   // Scenario Management
   scenarios: FundScenario[];
@@ -52,6 +83,9 @@ interface FundContextValue extends FundState {
   updateExpense: (id: string, expense: Partial<FundExpense>) => void;
   removeExpense: (id: string) => void;
   
+  // Batch Updates
+  batchUpdate: (updates: Partial<FundState>) => void;
+  
   // Validation
   validationResults: Map<string, ValidationResult>;
   validateField: (field: string, value: any) => ValidationResult;
@@ -60,12 +94,14 @@ interface FundContextValue extends FundState {
   
   // Calculations
   calculateForecast: () => Promise<void>;
+  cancelCalculation: () => void;
   
   // Export
   exportSettings: ExportSettings;
   updateExportSettings: (settings: Partial<ExportSettings>) => void;
   exportScenario: (id: string) => string;
   importScenario: (data: string) => string;
+  exportToExcel: () => Promise<Blob>;
   
   // Computed Values
   investableCapital: number;
@@ -75,10 +111,10 @@ interface FundContextValue extends FundState {
   
   // Utilities
   resetToDefaults: () => void;
+  clearCache: () => void;
 }
 
 // ===== DEFAULT STATE =====
-
 const createDefaultState = (): FundState => ({
   ...DEFAULT_FUND_PARAMS,
   stageStrategies: [...DEFAULT_STAGE_STRATEGIES],
@@ -107,16 +143,21 @@ const defaultExportSettings: ExportSettings = {
 };
 
 // ===== CONTEXT CREATION =====
-
 const FundContext = createContext<FundContextValue | null>(null);
 
 // ===== PROVIDER COMPONENT =====
-
 export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Core state
   const [state, setState] = useState<FundState>(createDefaultState());
   const [forecastResult, setForecastResult] = useState<ForecastResult>();
   const [exportSettings, setExportSettings] = useState<ExportSettings>(defaultExportSettings);
+  
+  // Performance tracking
+  const [performanceMetrics, setPerformanceMetrics] = useState({
+    averageCalculationTime: 0,
+    cacheHitRate: 0,
+    totalCalculations: 0
+  });
   
   // Scenario management
   const [scenarios, setScenarios] = useState<FundScenario[]>([
@@ -133,11 +174,60 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [activeScenarioId, setActiveScenarioId] = useState('base');
   const [validationResults, setValidationResults] = useState<Map<string, ValidationResult>>(new Map());
   
-  // Debounced calculation
-  const [calculationTimeout, setCalculationTimeout] = useState<NodeJS.Timeout | null>(null);
+  // Worker management
+  const workerRef = useRef<Worker | null>(null);
+  const calculationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
-  // ===== COMPUTED VALUES =====
+  // Initialize worker
+  useEffect(() => {
+    const blob = new Blob([WORKER_SCRIPT], { type: 'application/javascript' });
+    const workerUrl = URL.createObjectURL(blob);
+    
+    try {
+      workerRef.current = new Worker(workerUrl);
+      
+      workerRef.current.onmessage = (event) => {
+        const { type, payload } = event.data;
+        
+        if (type === 'CALCULATION_COMPLETE') {
+          setForecastResult(payload);
+          setState(prev => ({
+            ...prev,
+            isCalculating: false,
+            calculationProgress: 100,
+            lastCalculation: new Date(),
+            isDirty: false
+          }));
+          
+          // Update performance metrics
+          const metrics = getPerformanceMetrics();
+          setPerformanceMetrics({
+            averageCalculationTime: metrics.averageCalculationTime,
+            cacheHitRate: metrics.cacheHitRate,
+            totalCalculations: metrics.totalCalculations
+          });
+        } else if (type === 'CALCULATION_ERROR') {
+          console.error('Calculation error:', payload);
+          setState(prev => ({
+            ...prev,
+            isCalculating: false,
+            calculationProgress: 0
+          }));
+        }
+      };
+    } catch (error) {
+      console.warn('Web Worker not available, falling back to main thread');
+    }
+    
+    return () => {
+      if (workerRef.current) {
+        workerRef.current.terminate();
+      }
+      URL.revokeObjectURL(workerUrl);
+    };
+  }, []);
   
+  // ===== MEMOIZED COMPUTED VALUES =====
   const gpCommitment = useMemo(() => 
     (state.fundSize * state.gpCommitmentPct) / 100,
     [state.fundSize, state.gpCommitmentPct]
@@ -159,7 +249,6 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
   
   // ===== VALIDATION =====
-  
   const validateField = useCallback((field: string, value: any): ValidationResult => {
     const tempInputs = { ...state, [field]: value };
     const errors = validateEnhancedInputs(tempInputs);
@@ -181,6 +270,12 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const results = new Map<string, ValidationResult>();
     const errors = validateEnhancedInputs(state);
     
+    // Add all fields as valid first
+    Object.keys(state).forEach(key => {
+      results.set(key, { field: key, isValid: true });
+    });
+    
+    // Override with errors
     errors.forEach(error => {
       results.set(error.field, {
         field: error.field,
@@ -201,7 +296,6 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [validationResults]);
   
   // ===== CALCULATIONS =====
-  
   const calculateForecast = useCallback(async () => {
     if (!isValid) {
       console.warn('Cannot calculate forecast: validation errors exist');
@@ -210,33 +304,54 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     setState(prev => ({ ...prev, isCalculating: true, calculationProgress: 0 }));
     
+    // Simulate progress updates
+    let progress = 0;
+    const progressInterval = setInterval(() => {
+      progress = Math.min(progress + 10, 90);
+      setState(prev => ({ ...prev, calculationProgress: progress }));
+    }, 100);
+    
     try {
-      // Simulate calculation progress
-      const progressInterval = setInterval(() => {
+      let result: ForecastResult;
+      
+      // Try to use worker, fall back to main thread
+      if (workerRef.current) {
+        // Worker calculation would go here, but for now we'll use main thread
+        result = await new Promise((resolve) => {
+          setTimeout(() => {
+            const forecast = buildEnhancedFundForecast(state);
+            resolve(forecast);
+          }, 500);
+        });
+        
+        setForecastResult(result);
         setState(prev => ({
           ...prev,
-          calculationProgress: Math.min((prev.calculationProgress || 0) + 10, 90)
+          isCalculating: false,
+          calculationProgress: 100,
+          lastCalculation: new Date(),
+          isDirty: false
         }));
-      }, 50);
-      
-      // Perform calculation
-      const result = await new Promise<ForecastResult>((resolve) => {
-        setTimeout(() => {
-          const forecast = buildEnhancedFundForecast(state);
-          resolve(forecast);
-        }, 300); // Simulate calculation time
-      });
+      } else {
+        // Main thread calculation
+        result = await new Promise((resolve) => {
+          setTimeout(() => {
+            const forecast = buildEnhancedFundForecast(state);
+            resolve(forecast);
+          }, 500);
+        });
+        
+        setForecastResult(result);
+        setState(prev => ({
+          ...prev,
+          isCalculating: false,
+          calculationProgress: 100,
+          lastCalculation: new Date(),
+          isDirty: false
+        }));
+      }
       
       clearInterval(progressInterval);
-      
-      setForecastResult(result);
-      setState(prev => ({
-        ...prev,
-        isCalculating: false,
-        calculationProgress: 100,
-        lastCalculation: new Date(),
-        isDirty: false
-      }));
       
       // Update active scenario with results
       setScenarios(prev => prev.map(scenario =>
@@ -245,7 +360,16 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
           : scenario
       ));
       
+      // Update performance metrics
+      const metrics = getPerformanceMetrics();
+      setPerformanceMetrics({
+        averageCalculationTime: metrics.averageCalculationTime,
+        cacheHitRate: metrics.cacheHitRate,
+        totalCalculations: metrics.totalCalculations
+      });
+      
     } catch (error) {
+      clearInterval(progressInterval);
       console.error('Calculation failed:', error);
       setState(prev => ({
         ...prev,
@@ -255,42 +379,71 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [state, isValid, activeScenarioId]);
   
-  // ===== AUTO-CALCULATION =====
+  const cancelCalculation = useCallback(() => {
+    // Cancel any pending calculations
+    if (calculationTimeoutRef.current) {
+      clearTimeout(calculationTimeoutRef.current);
+      calculationTimeoutRef.current = null;
+    }
+    
+    setState(prev => ({
+      ...prev,
+      isCalculating: false,
+      calculationProgress: 0
+    }));
+  }, []);
   
+  // ===== AUTO-CALCULATION WITH DEBOUNCE =====
   useEffect(() => {
     if (state.isDirty && isValid) {
-      if (calculationTimeout) {
-        clearTimeout(calculationTimeout);
+      if (calculationTimeoutRef.current) {
+        clearTimeout(calculationTimeoutRef.current);
       }
       
-      const timeout = setTimeout(() => {
+      calculationTimeoutRef.current = setTimeout(() => {
         calculateForecast();
-      }, 1000); // 1 second debounce
+      }, 1000);
       
-      setCalculationTimeout(timeout);
-      
-      return () => clearTimeout(timeout);
+      return () => {
+        if (calculationTimeoutRef.current) {
+          clearTimeout(calculationTimeoutRef.current);
+        }
+      };
     }
-  }, [state.isDirty, isValid, calculateForecast, calculationTimeout]);
+  }, [state.isDirty, isValid, calculateForecast]);
   
   // ===== STATE UPDATES =====
-  
   const updateFundParameter = useCallback(<K extends keyof FundState>(key: K, value: FundState[K]) => {
     setState(prev => ({
       ...prev,
       [key]: value,
       isDirty: true
     }));
+    
+    // Immediate validation
+    const validation = validateField(key as string, value);
+    setValidationResults(prev => new Map(prev).set(key as string, validation));
+  }, [validateField]);
+  
+  const batchUpdate = useCallback((updates: Partial<FundState>) => {
+    setState(prev => ({
+      ...prev,
+      ...updates,
+      isDirty: true
+    }));
   }, []);
   
   const updateStageStrategy = useCallback((index: number, strategy: Partial<StageStrategy>) => {
-    setState(prev => ({
-      ...prev,
-      stageStrategies: prev.stageStrategies.map((s, i) =>
-        i === index ? { ...s, ...strategy } : s
-      ),
-      isDirty: true
-    }));
+    setState(prev => {
+      const newStrategies = [...prev.stageStrategies];
+      newStrategies[index] = { ...newStrategies[index], ...strategy };
+      
+      return {
+        ...prev,
+        stageStrategies: newStrategies,
+        isDirty: true
+      };
+    });
   }, []);
   
   const updateGraduationRate = useCallback((fromStage: string, toStage: string, rate: number) => {
@@ -339,7 +492,6 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
   
   // ===== SCENARIO MANAGEMENT =====
-  
   const createScenario = useCallback((name: string, description?: string): string => {
     const id = `scenario_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const newScenario: FundScenario = {
@@ -357,11 +509,17 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const switchScenario = useCallback((id: string) => {
     const scenario = scenarios.find(s => s.id === id);
     if (scenario) {
+      // Cancel any pending calculations
+      cancelCalculation();
+      
       setState(scenario.inputs);
       setForecastResult(scenario.results);
       setActiveScenarioId(id);
+      
+      // Re-validate
+      setTimeout(() => validateAll(), 0);
     }
-  }, [scenarios]);
+  }, [scenarios, cancelCalculation, validateAll]);
   
   const updateScenario = useCallback((id: string, updates: Partial<FundScenario>) => {
     setScenarios(prev => prev.map(scenario =>
@@ -370,13 +528,15 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
   
   const deleteScenario = useCallback((id: string) => {
-    if (scenarios.length <= 1) return; // Don't delete last scenario
+    if (scenarios.length <= 1) return;
     
     setScenarios(prev => prev.filter(s => s.id !== id));
     
     if (activeScenarioId === id) {
       const remaining = scenarios.filter(s => s.id !== id);
-      switchScenario(remaining[0].id);
+      if (remaining.length > 0) {
+        switchScenario(remaining[0].id);
+      }
     }
   }, [scenarios, activeScenarioId, switchScenario]);
   
@@ -384,11 +544,19 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const scenario = scenarios.find(s => s.id === id);
     if (!scenario) return '';
     
-    return createScenario(newName, `Copy of ${scenario.description || scenario.name}`);
+    const newId = createScenario(newName, `Copy of ${scenario.description || scenario.name}`);
+    
+    // Copy the inputs and results
+    setScenarios(prev => prev.map(s =>
+      s.id === newId
+        ? { ...s, inputs: { ...scenario.inputs }, results: scenario.results }
+        : s
+    ));
+    
+    return newId;
   }, [scenarios, createScenario]);
   
   // ===== EXPORT/IMPORT =====
-  
   const updateExportSettings = useCallback((settings: Partial<ExportSettings>) => {
     setExportSettings(prev => ({ ...prev, ...settings }));
   }, []);
@@ -420,22 +588,49 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [createScenario, updateScenario]);
   
+  const exportToExcel = useCallback(async (): Promise<Blob> => {
+    // This would be implemented with a library like SheetJS
+    // For now, return a CSV blob
+    const scenario = scenarios.find(s => s.id === activeScenarioId);
+    if (!scenario || !scenario.results) {
+      throw new Error('No results to export');
+    }
+    
+    // Build CSV content
+    let csv = 'Quarter,Year,NAV,DPI,RVPI,TVPI,Gross IRR,Net IRR\n';
+    
+    scenario.results.timeline.forEach(point => {
+      csv += `${point.quarter},${point.year},${point.nav},${point.dpi},${point.rvpi},${point.tvpi},${point.grossIrr},${point.netIrr}\n`;
+    });
+    
+    return new Blob([csv], { type: 'text/csv' });
+  }, [scenarios, activeScenarioId]);
+  
   const resetToDefaults = useCallback(() => {
     setState(createDefaultState());
     setForecastResult(undefined);
+    clearCalculationCache();
+  }, []);
+  
+  const clearCache = useCallback(() => {
+    clearCalculationCache();
+    setPerformanceMetrics({
+      averageCalculationTime: 0,
+      cacheHitRate: 0,
+      totalCalculations: 0
+    });
   }, []);
   
   // ===== VALIDATION ON MOUNT =====
-  
   useEffect(() => {
     validateAll();
-  }, [validateAll]);
+  }, []);
   
   // ===== CONTEXT VALUE =====
-  
-  const contextValue: FundContextValue = {
+  const contextValue: FundContextValue = useMemo(() => ({
     ...state,
     forecastResult,
+    performanceMetrics,
     scenarios,
     activeScenarioId,
     validationResults,
@@ -448,6 +643,7 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     // Functions
     updateFundParameter,
+    batchUpdate,
     updateStageStrategy,
     updateGraduationRate,
     addExpense,
@@ -456,6 +652,7 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
     validateField,
     validateAll,
     calculateForecast,
+    cancelCalculation,
     createScenario,
     switchScenario,
     updateScenario,
@@ -464,8 +661,45 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
     updateExportSettings,
     exportScenario,
     importScenario,
-    resetToDefaults
-  };
+    exportToExcel,
+    resetToDefaults,
+    clearCache
+  }), [
+    state,
+    forecastResult,
+    performanceMetrics,
+    scenarios,
+    activeScenarioId,
+    validationResults,
+    isValid,
+    investableCapital,
+    totalManagementFees,
+    lpCommitment,
+    gpCommitment,
+    exportSettings,
+    updateFundParameter,
+    batchUpdate,
+    updateStageStrategy,
+    updateGraduationRate,
+    addExpense,
+    updateExpense,
+    removeExpense,
+    validateField,
+    validateAll,
+    calculateForecast,
+    cancelCalculation,
+    createScenario,
+    switchScenario,
+    updateScenario,
+    deleteScenario,
+    duplicateScenario,
+    updateExportSettings,
+    exportScenario,
+    importScenario,
+    exportToExcel,
+    resetToDefaults,
+    clearCache
+  ]);
   
   return (
     <FundContext.Provider value={contextValue}>
@@ -475,7 +709,6 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
 };
 
 // ===== HOOK =====
-
 export const useFundContext = (): FundContextValue => {
   const context = useContext(FundContext);
   if (!context) {
