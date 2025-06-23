@@ -1,96 +1,261 @@
-// src/pages/ScenarioComparison.tsx
+// src/types/index.ts
 
-import React from 'react';
-import { useFundContext } from '../context/FundContext';
-import DataTable from '../components/DataTable';
-import LoadingSpinner from '../components/LoadingSpinner';
+import Decimal from 'decimal.js';
 
-const ScenarioComparison: React.FC = () => {
-  const { scenarios, isCalculating } = useFundContext();
+// ===== CORE FUND TYPES =====
 
-  if (isCalculating) {
-    return <LoadingSpinner message="Loading scenario comparison..." />;
+export interface StageStrategy {
+  stage: string;
+  allocationPct: number;
+  avgInvestmentSize: number;
+  numFirstChecks?: number;
+  graduationRate: number;
+  weightedExitValue: number;
+  exitMultiple: number;
+  avgExitQuarter: number;
+}
+
+export interface GraduationMatrix {
+  [fromStage: string]: {
+    [toStage: string]: number;
+  };
+}
+
+export interface ExitProbabilityMatrix {
+  [stage: string]: {
+    fail: number;
+    low: number;
+    med: number;
+    high: number;
+    mega: number;
+    success?: number; // computed as 1 - fail
+  };
+}
+
+export interface FundExpense {
+  id: string;
+  category: string;
+  amount: number;
+  startQuarter: number;
+  endQuarter: number;
+  isAnnual?: boolean;
+}
+
+export interface FeeProfile {
+  name: string;
+  value: number; // percentage
+  basis: 'LP Committed Capital' | 'Invested Capital' | 'Fund Size';
+  startQuarter: number;
+  endQuarter: number;
+}
+
+// ===== ENHANCED FUND INPUTS =====
+
+export interface EnhancedFundInputs {
+  // Basic Fund Parameters
+  fundName: string;
+  fundSize: number;
+  managementFeeRate: number;
+  carryPct: number;
+  hurdleRate?: number;
+  gpCommitmentPct: number;
+  includeGpInFees: boolean;
+  
+  // Fund Structure
+  fundLifeYears: number;
+  investmentPeriodYears: number;
+  fundLifeQuarters: number;
+  investPeriodQuarters: number;
+  
+  // Strategy
+  stageStrategies: StageStrategy[];
+  graduationMatrix: GraduationMatrix;
+  exitProbabilityMatrix: ExitProbabilityMatrix;
+  
+  // Advanced
+  feeProfiles: FeeProfile[];
+  expenses: FundExpense[];
+  waterfallType: 'american' | 'european';
+}
+
+// ===== PORTFOLIO TYPES =====
+
+export interface Investment {
+  stage: string;
+  amount: number;
+  quarter: number;
+  ownership?: number;
+  valuation?: number;
+  isFollowOn?: boolean;
+}
+
+export interface PortfolioCompany {
+  id: string;
+  name: string;
+  entryStage: string;
+  currentStage: string;
+  investments: Investment[];
+  totalInvested: number;
+  currentValuation?: number;
+  exitValue?: number;
+  exitQuarter?: number;
+  status: "active" | "exited" | "written-off";
+  sector?: string;
+  geography?: string;
+}
+
+// ===== FORECAST RESULTS =====
+
+export interface CashFlowPoint {
+  quarter: number;
+  year: number;
+  yearQuarter: string; // "Y1Q1" format
+  
+  // Cash flows
+  contributions: number;
+  distributions: number;
+  managementFees: number;
+  
+  // Running totals
+  cumulativeContributions: number;
+  cumulativeDistributions: number;
+  nav: number;
+  
+  // Performance metrics
+  dpi: number;
+  rvpi: number;
+  tvpi: number;
+  moic: number;
+  netMoic: number;
+  grossIrr: number;
+  netIrr: number;
+}
+
+export interface CompanyResult {
+  companyId: string;
+  invested: number;
+  exitProceeds: number;
+  profit: number;
+  carry: number;
+  lpProfit: number;
+  multiple: number;
+}
+
+export interface WaterfallSummary {
+  totalInvested: number;
+  totalExitValue: number;
+  totalProfit: number;
+  lpReturnOfCapital: number;
+  lpPreferredReturn: number;
+  gpCatchUp: number;
+  gpCarry: number;
+  lpCarry: number;
+  finalLpProceeds: number;
+  finalGpProceeds: number;
+}
+
+export interface ForecastResult {
+  // Core results
+  timeline: CashFlowPoint[];
+  portfolio: PortfolioCompany[];
+  companyResults: CompanyResult[];
+  waterfallSummary: WaterfallSummary;
+  
+  // Summary metrics
+  totalInvested: number;
+  totalExitValue: number;
+  totalManagementFees: number;
+  totalGpCarry: number;
+  totalLpProfit: number;
+  
+  // Performance metrics
+  grossMoic: number;
+  netMoic: number;
+  grossIrr: number;
+  netIrr: number;
+  tvpi: number;
+  dpi: number;
+  rvpi: number;
+  
+  // Meta information
+  calculationDate: Date;
+  fundLifeQuarters: number;
+  
+  // Intermediate data for analysis
+  intermediates: {
+    quarterlyDeployments: number[];
+    quarterlyNAVs: number[];
+    quarterlyDistributions: number[];
+    quarterlyManagementFees: number[];
+    companiesCreated: number;
+    companiesExited: number;
+    companiesWrittenOff: number;
+  };
+}
+
+// ===== SCENARIO MANAGEMENT =====
+
+export interface FundScenario {
+  id: string;
+  name: string;
+  description?: string;
+  createdAt: Date;
+  inputs: EnhancedFundInputs;
+  results?: ForecastResult;
+  isBaseline?: boolean;
+}
+
+// ===== VALIDATION =====
+
+export interface ValidationResult {
+  field: string;
+  isValid: boolean;
+  error?: string;
+  warning?: string;
+  suggestion?: {
+    value: any;
+    message: string;
+  };
+  severity?: 'error' | 'warning' | 'info';
+}
+
+export interface ValidationError {
+  field: string;
+  message: string;
+  code: string;
+  severity: 'error' | 'warning';
+}
+
+// ===== ERROR HANDLING =====
+
+export class FundModelError extends Error {
+  constructor(public code: string, message: string, public details?: any) {
+    super(message);
+    this.name = 'FundModelError';
   }
+}
 
-  const scenarioColumns = [
-    {
-      key: 'name',
-      header: 'Scenario',
-      cell: (scenario: any) => (
-        <div>
-          <div className="font-medium text-gray-900">{scenario.name}</div>
-          <div className="text-sm text-gray-500">{scenario.description || 'No description'}</div>
-        </div>
-      )
-    },
-    {
-      key: 'grossMoic',
-      header: 'Gross MOIC',
-      cell: (scenario: any) => (
-        <span className="font-medium">
-          {scenario.results ? `${scenario.results.grossMoic.toFixed(2)}x` : 'Pending'}
-        </span>
-      )
-    },
-    {
-      key: 'netIrr',
-      header: 'Net IRR',
-      cell: (scenario: any) => (
-        <span className="font-medium">
-          {scenario.results ? `${(scenario.results.netIrr * 100).toFixed(1)}%` : 'Pending'}
-        </span>
-      )
-    },
-    {
-      key: 'tvpi',
-      header: 'TVPI',
-      cell: (scenario: any) => (
-        <span className="font-medium">
-          {scenario.results ? `${scenario.results.tvpi.toFixed(2)}x` : 'Pending'}
-        </span>
-      )
-    },
-    {
-      key: 'status',
-      header: 'Status',
-      cell: (scenario: any) => (
-        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-          scenario.results ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
-        }`}>
-          {scenario.results ? 'Calculated' : 'Pending'}
-        </span>
-      )
-    }
-  ];
+// ===== UTILITY TYPES =====
 
-  return (
-    <div className="space-y-8 animate-fade-in">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Scenario Comparison</h1>
-        <p className="mt-2 text-gray-600">
-          Compare different fund assumptions and analyze sensitivity to key parameters
-        </p>
-      </div>
+export type TimeInterval = 'Quarter' | 'Year' | 'Month';
+export type WaterfallType = 'american' | 'european';
+export type CompanyStatus = 'active' | 'exited' | 'written-off';
+export type ExitOutcome = 'fail' | 'low' | 'med' | 'high' | 'mega';
 
-      <DataTable
-        data={scenarios}
-        columns={scenarioColumns}
-        emptyMessage="No scenarios available"
-      />
+// ===== EXPORT TYPES =====
 
-      <div className="card">
-        <div className="card-header">
-          <h3 className="text-lg font-semibold">Scenario Analysis</h3>
-        </div>
-        <div className="card-body">
-          <p className="text-gray-600">
-            Advanced scenario comparison charts and sensitivity analysis will be displayed here.
-            This includes your sophisticated batch runner and scenario table builder integration.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-};
+export interface ExportSettings {
+  includeCashFlows: boolean;
+  includeCompanyDetails: boolean;
+  includeAssumptions: boolean;
+  includeCharts: boolean;
+  format: 'excel' | 'csv' | 'pdf' | 'json';
+  lpFriendly: boolean;
+}
 
-export default ScenarioComparison;
+export interface ExportResult {
+  filename: string;
+  data: Blob | string;
+  mimeType: string;
+  sheets?: Record<string, string>; // For multi-sheet exports
+}
